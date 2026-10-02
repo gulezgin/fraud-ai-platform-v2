@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fraud-platform"
+version = "0.1.0"
+description = "IEEE-CIS verisi üzerinde çok katmanlı anomali tespiti, kural motoru, RAG ve multi-agent içeren fraud platformu"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI + dependency_injector kalıbı: Depends(Provide[...]) varsayılan argümanda olmalı
+extend-immutable-calls = ["fastapi.Depends", "dependency_injector.wiring.Provide"]

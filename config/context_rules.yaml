@@ -1,0 +1,141 @@
+# Context kuralları (Adım 6): ham anomali skorunu iş ve zaman bağlamına göre düzeltir.
+#
+# adjusted_score = min(raw_anomaly_score x sınırlı(Π çarpan), 1)
+#
+# Çarpanlar veriden türetildi (scripts/calibrate_context.py, notebooks/04 bölüm 7):
+#   koşullu lift = alarm bölgesinde (en riskli %10), aynı skor seviyesindeki işlemlere göre gözlenen / beklenen fraud
+#   çarpan       = koşullu lift ^ 0,5   (sönümlenmiş; tek kural için [0,5; 1,5])
+# Ham lift değil koşullu lift kullanılır: skorun zaten gördüğü riski ikinci kez saymamak için.
+# evidence: valid-A dönemi (train'de fit edilmiş dedektörler). Kapsam = işlemlerin ne kadarında koşul sağlanıyor.
+
+min_total_factor: 0.5
+max_total_factor: 2.0
+
+rules:
+  # ---------------------------------------------------------------- zaman bağlamı
+  - id: C01
+    name: is_saatleri
+    category: zaman
+    when: {field: is_business_hours, op: eq, value: 1}
+    factor: 0.95
+    evidence: {coverage: 0.590, raw_lift: 0.89, conditional_lift: 0.90}
+    reason: "Yerel 09-18 arası işlem hacminin yüksek olduğu dönem; sapmalar daha olağan"
+
+  - id: C02
+    name: gece
+    category: zaman
+    when: {field: is_night, op: eq, value: 1}
+    factor: 1.22
+    evidence: {coverage: 0.050, raw_lift: 2.69, conditional_lift: 1.48}
+    reason: "Yerel 00-06 arası hacim düşük, fraud oranı ~2,7 kat; temporal katmanın nadir saat bileşeni bunu zayıf yakalıyor"
+
+  - id: C03
+    name: hafta_sonu
+    category: zaman
+    when: {field: is_weekend, op: eq, value: 1}
+    factor: 1.01
+    evidence: {coverage: 0.220, raw_lift: 1.06, conditional_lift: 1.02}
+    reason: "Hafta sonu fraud oranı hafta içiyle aynı (lift 1,03); etkisi ölçüldü ve nötre yakın bırakıldı"
+
+  # ---------------------------------------------------------------- entity bağlamı
+  - id: C04
+    name: guvenilir_kullanici
+    category: entity
+    when:
+      all:
+        - {field: card_age_days, op: gte, value: 180}
+        - {field: days_since_first_tx, op: gte, value: 30}
+        - {field: is_new_device_for_user, op: eq, value: 0}
+    factor: 0.68
+    evidence: {coverage: 0.147, raw_lift: 0.23, conditional_lift: 0.46}
+    reason: "Kart en az 180 günlük, kullanıcı en az 30 gündür görülüyor ve bilinen cihazdan işlem yapıyor"
+
+  - id: C05
+    name: yogun_kullanici
+    category: entity
+    when: {field: user_tx_count, op: gte, value: 20}
+    factor: 0.91
+    evidence: {coverage: 0.061, raw_lift: 1.79, conditional_lift: 0.84}
+    reason: "20+ geçmiş işlemli kullanıcılarda skor (velocity/cihaz bileşenleri) riski olduğundan yüksek gösteriyor"
+
+  - id: C06
+    name: gecmissiz_islem
+    category: entity
+    when: {field: is_first_tx, op: eq, value: 1}
+    factor: 1.5
+    evidence: {coverage: 0.316, raw_lift: 0.85, conditional_lift: 2.33}
+    reason: "Kullanıcının ilk işlemi: entity ve temporal katman geçmiş olmadığı için nötr kalıyor, skor riski eksik tahmin ediyor"
+
+  - id: C07
+    name: yeni_kart
+    category: entity
+    when:
+      all:
+        - {field: ProductCD, op: eq, value: W}
+        - {field: card_age_days, op: lte, value: 7}
+    factor: 1.21
+    evidence: {coverage: 0.331, raw_lift: 0.77, conditional_lift: 1.47}
+    reason: "W ürününde ilk 7 gündeki kartlar; C/H/R'de D1 çoğunlukla 0 olduğu için sadece W"
+
+  - id: C08
+    name: yuksek_degerli_musteri
+    category: entity
+    when: {field: is_high_value_customer, op: eq, value: 1}
+    factor: 0.80
+    evidence: {coverage: 0.067, raw_lift: 1.67, conditional_lift: 0.65}
+    reason: "Geçmiş ortalama tutarı ilk %10'da olan müşteri; alarm bölgesinde fraud oranı skorun beklediğinden düşük"
+
+  # ---------------------------------------------------------------- işlem tipi risk profili
+  - id: C09
+    name: kredi_karti
+    category: islem_tipi
+    when: {field: card6, op: eq, value: credit}
+    factor: 1.09
+    evidence: {coverage: 0.230, raw_lift: 2.04, conditional_lift: 1.19}
+    reason: "Kredi kartı işlemleri banka kartına göre ~2,8 kat riskli; skor bunun bir kısmını görüyor"
+
+  - id: C10
+    name: yuksek_tutar
+    category: islem_tipi
+    when: {field: TransactionAmt, op: gte, value: 500}
+    factor: 1.03
+    evidence: {coverage: 0.043, raw_lift: 1.90, conditional_lift: 1.05}
+    reason: "500 USD (~%96. yüzdelik) üstü işlemler"
+
+  # ---------------------------------------------------------------- coğrafi risk
+  - id: C11
+    name: yurt_disi_adres
+    category: cografi
+    when: {field: is_foreign_address, op: eq, value: 1}
+    factor: 1.5
+    evidence: {coverage: 0.009, raw_lift: 2.80, conditional_lift: 2.39}
+    reason: "Fatura ülkesi (addr2) yurt içi kodundan farklı; ham lift 3,6, skor bunun çoğunu görmüyor"
+
+  # ---------------------------------------------------------------- değerlendirilip eklenmeyenler
+  # Ham lift'leri yüksek ama anomali skoru bu riski zaten yakalıyor (koşullu lift ~1). Eklemek çift sayım olur.
+  - id: C12
+    name: urun_C
+    category: islem_tipi
+    when: {field: ProductCD, op: eq, value: C}
+    factor: 1.0
+    evidence: {coverage: 0.151, raw_lift: 3.05, conditional_lift: 1.05}
+    enabled: false
+    reason: "Ham lift 3,3 ama koşullu lift ~1: skor zaten yakalıyor"
+
+  - id: C13
+    name: adres_bos
+    category: cografi
+    when: {field: addr1_isna, op: eq, value: 1}
+    factor: 1.0
+    evidence: {coverage: 0.145, raw_lift: 3.14, conditional_lift: 1.04}
+    enabled: false
+    reason: "Ham lift 3,4 ama koşullu lift ~1: skor zaten yakalıyor"
+
+  - id: C14
+    name: kur_cevrimi
+    category: islem_tipi
+    when: {field: amount_is_converted, op: eq, value: 1}
+    factor: 1.0
+    evidence: {coverage: 0.136, raw_lift: 3.03, conditional_lift: 1.05}
+    enabled: false
+    reason: "Ham lift 3,2 ama koşullu lift ~1: skor zaten yakalıyor"

@@ -1,0 +1,218 @@
+# İş kuralları (Adım 7). Koşul dili context motoruyla ortak (src/fraud_platform/conditions).
+#
+# Anomali skoru kurallara alan olarak girer (risk_percentile = düzeltilmiş skorun eğitim dağılımındaki yeri):
+# skor da öncelikli bir kural gibi çakışma çözümüne katılır.
+#
+# Öncelik bantları (aksiyona göre): BLOCK 90-100 | REVIEW 65-89 | beyaz liste (ALLOW) 60 | FLAG 40-59
+#   -> priority_then_severity altında FLAG kuralı skorun REVIEW kararını, beyaz liste REVIEW/BLOCK'u ezemez.
+# Aksiyon seçimi (ek isabet testi, notebooks/04 bölüm 8): skorun %3 bütçesinin hemen altındaki dilimin isabeti ~%11.
+#   Kural bütçe dışına bundan daha isabetli alarm ekliyorsa REVIEW, eklemiyorsa FLAG (izleme, analist yükü yok).
+# BLOCK sadece yüksek isabette (%55+): yanlış blok müşteriyi doğrudan etkiler.
+# final_risk = min(1, max(0, risk_percentile + tetiklenen kuralların risk_delta toplamı))
+# evidence: valid dönemi. precision = kural tetiklendiğinde fraud oranı, incremental = skorun %3 bütçesi dışındaki isabet.
+
+conflict_strategy: priority_then_severity   # priority_then_severity | most_severe | first_match
+default_action: ALLOW
+
+rules:
+  # ---------------------------------------------------------------- BLOCK (90-100)
+  # Koruma (user_tx_count < 100): yerleşik yüksek hacimli entity otomatik bloklanmaz, skor kuralıyla REVIEW'a düşer.
+  # Test döneminde tek bir meşru entity (1.414 işlem, ProductCD S, 0 fraud) R001'i 1.245, R002'yi ~1.370 kez tetikledi;
+  # BLOCK isabeti %67,6 -> %8,3. Valid'deki gerçek fraud patlamalarının hepsi <= 70 geçmiş işlemli kullanıcılarda;
+  # koruma valid'de hiçbir kararı değiştirmiyor. NOT: sorun testte bulundu, düzeltme sonrası test sonucu iyimserdir.
+  - id: R001
+    name: Velocity patlaması
+    category: velocity
+    priority: 100
+    condition:
+      all:
+        - {field: tx_count_1h, op: gte, value: 10}         # %99,9 yüzdelik
+        - {field: user_tx_count, op: lt, value: 100}       # koruma
+    action: BLOCK
+    evidence: {coverage: 0.0006, precision: 0.568, incremental_precision: 0.182}
+    risk_delta: 0.3
+    explanation: "Kullanıcının son 1 saatte {tx_count_1h:.0f} işlemi daha var (bot / kart test şüphesi)"
+    policy_ref: FP-03
+
+  - id: R002
+    name: Çok yüksek anomali skoru
+    category: skor
+    priority: 95
+    condition:
+      all:
+        - {field: risk_percentile, op: gte, value: 0.999}
+        - {field: user_tx_count, op: lt, value: 100}       # koruma
+    action: BLOCK
+    evidence: {coverage: 0.0031, precision: 0.691, incremental_precision: null}
+    risk_delta: 0.2
+    explanation: "Anomali skoru en uç %0,1'de (risk yüzdeliği {risk_percentile:.4f})"
+    policy_ref: FP-01
+
+  # ---------------------------------------------------------------- REVIEW (65-89)
+  - id: R003
+    name: Gece veya yurt dışı + yüksek tutar
+    category: tutar
+    priority: 85
+    condition:
+      all:
+        - {field: TransactionAmt, op: gte, value: 500}       # %96 yüzdelik
+        - any:
+            - {field: is_night, op: eq, value: 1}
+            - {field: is_foreign_address, op: eq, value: 1}
+    action: REVIEW
+    evidence: {coverage: 0.0015, precision: 0.221, incremental_precision: 0.201}
+    risk_delta: 0.15
+    explanation: "Yerel saat {local_hour:.0f}:00'da {TransactionAmt:.2f} USD (gece: {is_night}, yurt dışı adres: {is_foreign_address})"
+    policy_ref: FP-15
+
+  - id: R004
+    name: Riskli e-posta domaini
+    category: e-posta
+    priority: 80
+    condition: {field: P_emaildomain, op: in, value: [protonmail.com, mail.com, outlook.es]}
+    action: REVIEW
+    evidence: {coverage: 0.0020, precision: 0.264, incremental_precision: 0.214}
+    risk_delta: 0.1
+    explanation: "Alıcı e-posta domaini {P_emaildomain} yüksek riskli listede"
+    policy_ref: FP-18
+
+  - id: R005
+    name: Yüksek anomali skoru (alarm bütçesi)
+    category: skor
+    priority: 70
+    condition: {field: risk_percentile, op: gte, value: 0.97}    # analist bütçesi: en riskli %3
+    action: REVIEW
+    evidence: {coverage: 0.0427, precision: 0.290, incremental_precision: null}
+    risk_delta: 0.05
+    explanation: "Anomali skoru en riskli %3'te (risk yüzdeliği {risk_percentile:.4f})"
+    policy_ref: FP-01
+
+  # ---------------------------------------------------------------- beyaz liste (60)
+  - id: R006
+    name: Güvenilir müşteri, düşük tutar
+    category: beyaz_liste
+    priority: 60
+    condition:
+      all:
+        - {field: card_age_days, op: gte, value: 180}
+        - {field: days_since_first_tx, op: gte, value: 30}
+        - {field: is_new_device_for_user, op: eq, value: 0}
+        - {field: TransactionAmt, op: lt, value: 100}
+    action: ALLOW
+    evidence: {coverage: 0.0918, precision: 0.012, incremental_precision: 0.012}
+    risk_delta: -0.1
+    explanation: "Kart {card_age_days:.0f} günlük, kullanıcı {days_since_first_tx:.0f} gündür görülüyor, bilinen cihaz, {TransactionAmt:.2f} USD"
+    policy_ref: FP-20
+
+  # ---------------------------------------------------------------- FLAG (40-59)
+  - id: R007
+    name: Cihaz paylaşımı (kart test) + yüksek skor
+    category: cihaz
+    priority: 58
+    condition:
+      all:
+        - {field: device_n_cards, op: gte, value: 5}
+        - {field: risk_percentile, op: gte, value: 0.9}
+    action: FLAG
+    evidence: {coverage: 0.0447, precision: 0.187, incremental_precision: 0.077}
+    risk_delta: 0.1
+    explanation: "Bu cihazda daha önce {device_n_cards:.0f} farklı kart görülmüş ve risk yüzdeliği {risk_percentile:.3f}"
+    policy_ref: FP-12
+
+  - id: R008
+    name: Velocity yüksek
+    category: velocity
+    priority: 56
+    condition: {field: tx_count_1h, op: gte, value: 5}       # %99 yüzdeliğin üstü
+    action: FLAG
+    evidence: {coverage: 0.0063, precision: 0.171, incremental_precision: 0.057}
+    risk_delta: 0.1
+    explanation: "Kullanıcının son 1 saatte {tx_count_1h:.0f} işlemi daha var"
+    policy_ref: FP-03
+
+  - id: R009
+    name: 24 saatlik harcama patlaması
+    category: velocity
+    priority: 54
+    condition:
+      all:
+        - {field: amount_sum_24h, op: gte, value: 2000}      # ~%99 yüzdelik
+        - {field: tx_count_24h, op: gte, value: 5}
+    action: FLAG
+    evidence: {coverage: 0.0047, precision: 0.164, incremental_precision: 0.083}
+    risk_delta: 0.1
+    explanation: "Son 24 saatte {tx_count_24h:.0f} işlemde toplam {amount_sum_24h:.2f} USD"
+    policy_ref: FP-04
+
+  - id: R010
+    name: Yeni cihaz + kişisel sapma
+    category: entity
+    priority: 52
+    condition:
+      all:
+        - {field: is_new_device_for_user, op: eq, value: 1}
+        - {field: amount_to_user_avg, op: gte, value: 3}     # ~%95 yüzdelik
+    action: FLAG
+    evidence: {coverage: 0.0054, precision: 0.147, incremental_precision: 0.091}
+    risk_delta: 0.05
+    explanation: "Kullanıcı ilk kez bu cihazdan işlem yapıyor ve tutar geçmiş ortalamasının {amount_to_user_avg:.1f} katı"
+    policy_ref: FP-09
+
+  - id: R011
+    name: Ardışık hızlı işlem
+    category: velocity
+    priority: 50
+    condition:
+      all:
+        - {field: time_since_last_tx, op: lt, value: 60}
+        - {field: TransactionAmt, op: gte, value: 200}
+    action: FLAG
+    evidence: {coverage: 0.0028, precision: 0.127, incremental_precision: 0.100}
+    risk_delta: 0.05
+    explanation: "Önceki işlemden {time_since_last_tx:.0f} saniye sonra {TransactionAmt:.2f} USD"
+    policy_ref: FP-04
+
+  - id: R012
+    name: Yeni kart + yüksek tutar
+    category: kart
+    priority: 45
+    condition:
+      all:
+        - {field: ProductCD, op: eq, value: W}               # C/H/R'de D1 çoğunlukla 0
+        - {field: card_age_days, op: lte, value: 7}
+        - {field: TransactionAmt, op: gte, value: 500}
+    action: FLAG
+    evidence: {coverage: 0.0257, precision: 0.075, incremental_precision: 0.076}
+    risk_delta: 0.05
+    explanation: "Kart {card_age_days:.0f} günlük ve tutar {TransactionAmt:.2f} USD"
+    policy_ref: FP-07
+
+  # ---------------------------------------------------------------- test edilip reddedilenler
+  - id: R013
+    name: Gece + yurt dışı + yüksek tutar (case örneği)
+    category: tutar
+    priority: 90
+    condition:
+      all:
+        - {field: TransactionAmt, op: gte, value: 500}
+        - {field: is_night, op: eq, value: 1}
+        - {field: is_foreign_address, op: eq, value: 1}
+    action: BLOCK
+    evidence: {coverage: 0.0000, precision: null, incremental_precision: null}
+    explanation: "Gece {TransactionAmt:.2f} USD yurt dışı adresli işlem"
+    policy_ref: FP-15
+    enabled: false   # valid'de hiç tetiklenmedi; VEYA'lı hali R003
+
+  - id: R014
+    name: Kişisel tutar sapması (ilk taslak)
+    category: entity
+    priority: 75
+    condition:
+      all:
+        - {field: amount_to_user_avg, op: gte, value: 10}
+        - {field: user_tx_count, op: gte, value: 3}
+    action: REVIEW
+    evidence: {coverage: 0.0009, precision: 0.019, incremental_precision: 0.019}
+    explanation: "Tutar kullanıcının geçmiş ortalamasının {amount_to_user_avg:.1f} katı"
+    policy_ref: FP-09
+    enabled: false   # fraud oranı %1,9 < ortalama %3,9; bu veride kişisel tutar sapması sinyal taşımıyor

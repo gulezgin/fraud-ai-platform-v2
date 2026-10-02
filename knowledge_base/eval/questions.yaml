@@ -1,0 +1,63 @@
+# RAG değerlendirme seti. Sorular bilerek politika metnindeki kelimeleri tekrar etmeden yazıldı (anlamsal arama ölçülsün).
+# expected: doğru politika kodu | facts: cevapta geçmesi beklenen, politikaya özgü (kurgusal) bilgi; biri yeterli.
+- question: Model alarmıyla bloke edilen bir işlemi analist ne kadar sürede teyit etmeli?
+  expected: FP-01
+  facts: ["2 saat"]
+- question: İnceleme kuyruğundaki bir işlem için zamanında karar verilmezse ne olur?
+  expected: FP-30
+  facts: ["onaylanır", "süre aşımı"]
+- question: Müşteriye hangi kuralın tetiklendiğini söyleyebilir miyiz?
+  expected: FP-31
+  facts: ["bildirilmez", "bildirilemez"]
+- question: Bir saat içinde çok sayıda alışveriş yapan kullanıcıya ne uygulanır?
+  expected: FP-03
+  facts: ["6 saat", "10"]
+- question: Kısa aralıklarla art arda yapılan ödemeler nasıl ele alınır?
+  expected: FP-04
+  facts: ["60 saniye", "2 kat"]
+- question: Yeni aktive edilmiş bir kartla pahalı bir alışveriş yapılırsa ne olur?
+  expected: FP-07
+  facts: ["1500", "7 gün"]
+- question: Hesabı çalınmış olabilecek bir kullanıcı farklı bir telefondan büyük ödeme yaparsa ne yapılır?
+  expected: FP-09
+  facts: ["72 saat"]
+- question: Aynı bilgisayardan birçok farklı kartla deneme yapılıyorsa ne olur?
+  expected: FP-12
+  facts: ["48 saat"]
+- question: Gece saatlerinde yurt dışı adresli pahalı bir sipariş geldiğinde süreç nedir?
+  expected: FP-15
+  facts: ["SMS"]
+- question: Hafta sonu yapılan işlemler için ayrı bir risk ayarı var mı?
+  expected: FP-16
+  facts: ["uygulanmaz", "yok"]
+- question: Hangi e-posta sağlayıcıları şüpheli sayılıyor ve bu liste nasıl güncelleniyor?
+  expected: FP-18
+  facts: ["90 gün", "50 işlem", "4 kat"]
+- question: Uzun süredir müşterimiz olan birinin küçük bir alışverişi nasıl değerlendirilir?
+  expected: FP-20
+  facts: ["100 USD", "180 gün"]
+- question: Çok harcama yapan VIP müşterilerin incelemesi ne kadar sürer?
+  expected: FP-21
+  facts: ["1 saat"]
+- question: Abonelik hesabı gibi sürekli işlem yapan meşru hesaplar otomatik bloklanır mı?
+  expected: FP-25
+  facts: ["muaf", "REVIEW"]
+- question: Modelin başarısı düşerse ne yapılır?
+  expected: FP-40
+  facts: ["%15", "yeniden eğitilir", "PSI"]
+- question: Aynı anda çok fazla işlem bloklanmaya başlarsa sistem nasıl tepki verir?
+  expected: FP-41
+  facts: ["5 kat", "2 saat"]
+- question: Yeni bir kural canlıya nasıl alınır?
+  expected: FP-42
+  facts: ["gölge", "4 hafta"]
+- question: Alıcı ve karşı tarafın e-posta adresi aynı firmadan ise bu bir sorun mu?
+  expected: FP-19
+  facts: ["karar üretmez", "bilgi notu"]
+# Cevabı bilgi tabanında olmayan sorular: model uydurmak yerine bilgi olmadığını söylemeli (expected: null)
+- question: Kripto para borsalarına yapılan transferlerde günlük limit kaç dolardır?
+  expected: null
+  facts: ["bilgi yok"]
+- question: Kredi başvurusunda gelir belgesi zorunlu mu?
+  expected: null
+  facts: ["bilgi yok"]

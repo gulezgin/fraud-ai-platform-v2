@@ -1,0 +1,174 @@
+# Projedeki tüm yollar ve sabitler buradan okunur; kodda sabit değer tutulmaz.
+# Göreli yollar proje köküne göre çözülür.
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  artifacts_dir: artifacts
+
+data:
+  transaction_file: train_transaction.csv
+  identity_file: train_identity.csv
+  merged_file: merged.parquet
+  schema_file: schema.json
+  quality_report_file: quality_report.json
+  profile_file: profile.json
+  features_file: features.parquet
+  feature_pipeline_file: feature_pipeline.joblib
+  feature_dictionary_file: feature_dictionary.csv
+  detectors_dir: detectors
+  profile_store_file: profile_store.parquet
+  layer_scores_file: layer_scores.parquet
+  layer_metrics_file: layer_metrics.json
+  aggregator_file: aggregator.joblib
+
+  # Kolon rolleri: başka bir işlem verisine uyarlamak için sadece burası değişir
+  id_column: TransactionID
+  target_column: isFraud
+  time_column: TransactionDT
+  amount_column: TransactionAmt
+
+  # TransactionDT gerçek tarih değil, referans andan itibaren geçen saniye.
+  # Referans tarih bilinmiyor; toplulukta yaygın varsayım kullanıldı (docs/notes.md)
+  reference_date: "2017-11-30"
+
+  # Geliştirme sırasında hız için örneklem; null ise tam veri kullanılır
+  dev_sample_size: 100000
+  random_state: 42
+
+entity:
+  # uid = card1 + addr1 + (işlem günü - D1). D1 kartın ilk kullanımından beri geçen gün,
+  # farkı kart başına sabit bir "başlangıç günü" verir. Karşılaştırma: notebooks/02, karar: docs/notes.md
+  uid_columns: [card1, addr1]
+  anchor_days_column: D1
+  # cihaz parmak izi: DeviceInfo tek başına cihaz değil ("Windows" işlemlerin %40'ı).
+  # bu birleşim 44.733 değer, en büyük grup %0,8
+  device_columns: [DeviceInfo, id_31, id_33, id_19, id_20]
+
+time:
+  # TransactionDT büyük ihtimalle UTC. Hacim çukuru ve fraud zirvesi göreli 05-11'de;
+  # 5 saat geri kaydırınca gece 00-06'ya denk geliyor (ABD doğu saati ile tutarlı)
+  hour_offset: -5
+  night_hours: [0, 6]          # [başlangıç, bitiş) yerel saat
+  business_hours: [9, 18]
+  weekend_days: [5, 6]         # 0 = Pazartesi, referans tarih varsayımıyla
+  velocity_windows:            # saniye; her biri için son X içindeki işlem sayısı
+    1h: 3600
+    24h: 86400
+    7d: 604800
+  rapid_repeat_seconds: 60
+
+features:
+  domestic_country_code: 87    # addr2'nin %88'i bu değer; yurt içi kabul edildi
+  email_columns: [P_emaildomain, R_emaildomain]
+  email_aliases: {gmail: gmail.com}
+  lowercase_columns: [DeviceInfo]
+  non_negative_columns: [D4, D11, D15]   # gün farkı; negatifler veri hatası -> 0
+  # boşluğu fraud ile ilişkili kolonlar (profile.json null_signal), aynı maskeli bloklardan birer temsilci
+  null_flag_columns: [addr1, dist1, R_emaildomain, M1, M4, M6, M7]
+  frequency_columns: [card1, card2, card5, addr1, P_emaildomain, R_emaildomain, DeviceInfo, id_31, id_33]
+  combo_columns: [ProductCD, card4, card6, P_emaildomain, DeviceType]
+  new_card_max_days: 7         # sadece W ürününde anlamlı; C/H/R'de D1 çoğunlukla 0
+  high_value_quantile: 0.9     # geçmiş ortalama tutarı bu yüzdeliğin üstündeki kullanıcılar
+
+evaluation:
+  # zamana göre bölme: [0, valid) eğitim, [valid, test) doğrulama, [test, 1] test.
+  # tasarım kararları doğrulamada verilir; test sadece final rapor için
+  valid_start_quantile: 0.6
+  test_start_quantile: 0.8
+  alert_rate: 0.03             # alarm bütçesi: en riskli %3 işlem
+
+detectors:
+  column:
+    z_cap: 10                  # |robust z| bu değerde 1'e doyar
+    rarity_log_cap: 5          # -log10(frekans) bu değerde 1'e doyar (frekans 1e-5)
+    batch_size: 100000
+  multivariate:
+    n_estimators: 200
+    max_samples: 1024
+    fit_sample_size: 200000
+    n_quantiles: 1000
+    random_state: 42
+  entity:
+    # doğrulamada ROC ~0,5 çıkan saat sapması ve yeni e-posta bileşenleri kullanılmıyor (notebooks/04)
+    weights: {amount_deviation: 1, new_device: 1, user_devices: 1, device_shared_uids: 1, device_shared_cards: 1}
+    caps: {amount_z: 5, user_devices: 10, device_shared: 50}
+  temporal:
+    weights: {velocity_1h: 1, velocity_24h: 1, velocity_7d: 1, gap: 1, rapid_repeat: 1, rare_hour: 1, amount_burst: 1}
+    caps: {velocity_1h: 10, velocity_24h: 20, velocity_7d: 50, amount_burst: 20, gap_seconds: 3600}
+
+scoring:
+  # Normalizasyon: her katman skoru eğitim dağılımındaki yüzdeliğe, sonra kuyruk "sürprizine" çevrilir:
+  # -log10(1 - yüzdelik). Düz yüzdelik kuyruğu sıkıştırıyordu (%99 ile %99,99 farkı kayboluyor).
+  # Valid-B, eşit ağırlık PR-AUC: yüzdelik 0,137 | min-max 0,158 | z-sigmoid 0,147 | kuyruk-log 0,170
+  normalization: tail_log            # percentile | minmax | tail_log
+  # Ağırlıklar: valid-A'da her katmanın tek başına PR-AUC kazancına (PR / fraud oranı - 1) orantılı.
+  # Valid-B PR-AUC: bu 0,198 (ROC 0,776) | eşit 0,170 | sezgisel 0,163 | grid optimum 0,217 (ROC 0,755, multi+temporal 0)
+  weights: {column: 0.424, multivariate: 0.293, temporal: 0.159, entity: 0.124}
+  tail_resolution: 400               # %99-%99,9997 arasındaki ek yüzdelik noktası
+
+context:
+  rules_file: config/context_rules.yaml
+  # Çarpan kalibrasyonu (scripts/calibrate_context.py): valid-A'da, alarm bölgesinde (en riskli %10) koşullu lift;
+  # çarpan = koşullu_lift ^ damping. Alarm kararları bu bölgede verildiği için bütün veri yerine burada ölçülür.
+  calibration:
+    alarm_region: 0.10
+    bins: 5
+    damping: 0.5
+    factor_bounds: [0.5, 1.5]
+
+rules:
+  rules_file: config/rules.yaml       # .yaml veya .json
+  base_risk_field: risk_percentile    # final_risk'in başlangıç değeri
+  review_budget: 0.97                 # ek isabet testi: skorun alarm bütçesi eşiği (en riskli %3)
+
+llm:
+  provider: ollama
+  model: qwen2.5:3b          # RTX 3050 (4 GB) belleğine bge-m3 ile birlikte sığıyor
+  host: http://localhost:11434
+  temperature: 0.0           # deterministik; politika aktarımında 0,1'den daha tutarlı (eval_rag.py)
+  num_ctx: 4096
+  max_tokens: 400            # üretim üst sınırı (num_predict); yoksa tekrar döngüsünde istek dakikalarca sürebiliyor
+  timeout: 180
+
+rag:
+  knowledge_base_dir: knowledge_base
+  index_dir: artifacts/rag
+  embedder: ollama           # ollama (bge-m3, çok dilli) | tfidf (indirmesiz taban çizgisi)
+  embedding_model: bge-m3
+  top_k: 3
+  max_context_chunks: 5      # 4096 token bağlama sığması için
+  max_chunk_words: 220
+  eval_file: knowledge_base/eval/questions.yaml
+
+agents:
+  # hybrid: önce anahtar kelime yönlendiricisi, eşleşmezse LLM (scripts/eval_planner.py, 16 istek):
+  # hybrid %88 | llm %75 | rules %81; görülmemiş ifadelerde rules %25, llm/hybrid %50
+  planner_mode: hybrid       # hybrid | llm | rules
+  investigate_on: [BLOCK, REVIEW, FLAG]   # ALLOW kararlarında maliyetli LLM soruşturması atlanır
+
+schema:
+  # Sayısal saklanan ama kod niteliğindeki kolonlar (fnmatch kalıbı).
+  # Kaynak: Kaggle veri açıklamasındaki kategorik kolon listesi
+  categorical_overrides:
+    - "card[1-6]"
+    - "addr[12]"
+    - "id_1[2-9]"
+    - "id_2[0-9]"
+    - "id_3[0-8]"
+  # kategorik kolonlar için cardinality seviyeleri: <= low -> low, > high -> high, arası medium
+  low_cardinality_max: 10
+  high_cardinality_min: 100
+
+profiling:
+  iqr_k: 1.5
+  robust_z_threshold: 3.5        # Iglewicz-Hoaglin önerisi
+  rare_combo_threshold: 0.0005   # tüm verinin %0,05'inden az görülen kombinasyon nadir
+  rare_combo_columns: [ProductCD, card4, card6, P_emaildomain, DeviceType]
+  corr_threshold: 0.95           # |r| bunun üstündeyse kolonlar aynı grupta
+  sample_size: 100000            # korelasyon / AUC gibi ağır hesaplar için örneklem
+
+quality:
+  near_empty_null_ratio: 0.9
+  # kök domain'e göre yazım farkı aranacak kolonlar (gmail.com / gmail gibi)
+  domain_columns: [P_emaildomain, R_emaildomain]

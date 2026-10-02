@@ -1,0 +1,54 @@
+# Planlayıcı değerlendirme seti: istek + işlem var mı + beklenen plan (onarımdan sonra, çalışma sırasıyla)
+- goal: Bu işlemi değerlendir ve kararın nedenini açıkla
+  transaction: true
+  expected: [validate_transaction, build_features, score, evaluate_rules, investigate]
+- goal: Sadece bu işlemin risk skorunu ver
+  transaction: true
+  expected: [validate_transaction, build_features, score]
+- goal: Bu işlem bloklanmalı mı?
+  transaction: true
+  expected: [validate_transaction, build_features, score, evaluate_rules]
+- goal: İşlemin kural motoru kararı nedir?
+  transaction: true
+  expected: [validate_transaction, build_features, score, evaluate_rules]
+- goal: Bu işlem neden şüpheli bulundu, politikalara göre anlat
+  transaction: true
+  expected: [validate_transaction, build_features, score, evaluate_rules, investigate]
+- goal: Anomali skoru kaç?
+  transaction: true
+  expected: [validate_transaction, build_features, score]
+- goal: Bu işlemin alanları eksiksiz ve geçerli mi?
+  transaction: true
+  expected: [validate_transaction]
+- goal: Bu işlemin feature'larını hesapla
+  transaction: true
+  expected: [validate_transaction, build_features]
+- goal: FP-12 politikası cihaz paylaşımında ne yapılmasını söylüyor?
+  transaction: false
+  expected: [answer_policy_question]
+- goal: Yeni kart politikasında günlük limit ne kadar?
+  transaction: false
+  expected: [answer_policy_question]
+- goal: Veri setinde kaç satır var?
+  transaction: false
+  expected: [dataset_summary]
+- goal: Eğitim verisinde eksik veri durumu nasıl?
+  transaction: false
+  expected: [dataset_summary]
+# holdout: anahtar kelimeler ayarlanırken GÖRÜLMEDİ (hibritte LLM'e düşen, kelime eşleşmesi olmayan ifadeler)
+- goal: Bu işlem dolandırıcılık mı?
+  transaction: true
+  holdout: true
+  expected: [validate_transaction, build_features, score, evaluate_rules]
+- goal: Bu ödemeye güvenebilir miyiz?
+  transaction: true
+  holdout: true
+  expected: [validate_transaction, build_features, score, evaluate_rules]
+- goal: Bu harcama ne kadar tuhaf?
+  transaction: true
+  holdout: true
+  expected: [validate_transaction, build_features, score]
+- goal: Kart test saldırısında cihaz ne kadar süre gözetimde kalır?
+  transaction: false
+  holdout: true
+  expected: [answer_policy_question]
